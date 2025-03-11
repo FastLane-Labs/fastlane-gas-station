@@ -10,12 +10,12 @@ import (
 	"github.com/FastLane-Labs/fastlane-gas-station/config"
 	"github.com/FastLane-Labs/fastlane-gas-station/contract/multicall"
 	"github.com/FastLane-Labs/fastlane-gas-station/events"
+	"github.com/FastLane-Labs/fastlane-gas-station/log"
 	"github.com/FastLane-Labs/fastlane-gas-station/metrics"
 	"github.com/FastLane-Labs/fastlane-gas-station/txsender"
 	"github.com/FastLane-Labs/fastlane-gas-station/utils"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/ethclient"
-	"github.com/ethereum/go-ethereum/log"
 	"github.com/prometheus/client_golang/prometheus"
 )
 
@@ -31,6 +31,8 @@ type GasStation struct {
 }
 
 func NewGasStation(config *config.GasStationConfig, carConfigs []*config.CarConfig) (*GasStation, error) {
+	log.InitLogger("debug")
+
 	ethClient, err := events.NewEthClientConnection(config.EthRpcUrl)
 	if err != nil {
 		return nil, err
@@ -54,7 +56,7 @@ func NewGasStation(config *config.GasStationConfig, carConfigs []*config.CarConf
 		carConfigs:      carConfigs,
 		recheckInterval: config.RecheckInterval,
 		metrics:         metrics,
-		chainId:         chainId,  
+		chainId:         chainId,
 	}, nil
 }
 

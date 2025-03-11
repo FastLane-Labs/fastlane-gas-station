@@ -107,6 +107,7 @@ func (s *TxSender) start() {
 				}
 
 				var wg sync.WaitGroup
+				var mu sync.Mutex
 				for _, tx := range pendingTxs {
 					wg.Add(1)
 					go func(broadcastTx *broadcastedTx) {
@@ -165,6 +166,7 @@ func (s *TxSender) start() {
 								return
 							}
 
+							mu.Lock()
 							s.state.broadcastedTxs[signedTx.Hash()] = &broadcastedTx{
 								hash: signedTx.Hash(),
 								request: txRequest{
@@ -178,7 +180,7 @@ func (s *TxSender) start() {
 								},
 								broadcastedAt: time.Now(),
 							}
-
+							mu.Unlock()
 							if s.metrics.Enabled {
 								s.metrics.RefillTxRetries.WithLabelValues(s.chainId.String()).Inc()
 							}
