@@ -194,23 +194,25 @@ func (s *TxSender) start() {
 								"nonce", broadcastTx.request.nonce,
 								"error", err,
 							)
+							mu.Lock()
 							delete(s.state.broadcastedTxs, broadcastTx.hash)
+							mu.Unlock()
 
 							if s.metrics.Enabled {
 								s.metrics.RefillTxReverted.WithLabelValues(s.chainId.String()).Inc()
 							}
 						} else {
+							mu.Lock()
 							delete(s.state.broadcastedTxs, broadcastTx.hash)
+							for hash, tx := range s.state.broadcastedTxs {
+								if tx.request.requestId == broadcastTx.request.requestId {
+									delete(s.state.broadcastedTxs, hash)
+								}
+							}
+							mu.Unlock()
 
 							if s.metrics.Enabled {
 								s.metrics.RefillTxSuccess.WithLabelValues(s.chainId.String()).Inc()
-							}
-
-							reqId := broadcastTx.request.requestId
-							for hash, tx := range s.state.broadcastedTxs {
-								if tx.request.requestId == reqId {
-									delete(s.state.broadcastedTxs, hash)
-								}
 							}
 						}
 					}(tx)
