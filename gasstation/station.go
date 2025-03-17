@@ -16,7 +16,6 @@ import (
 	"github.com/FastLane-Labs/fastlane-gas-station/utils"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/ethclient"
-	"github.com/prometheus/client_golang/prometheus"
 )
 
 type GasStation struct {
@@ -43,7 +42,7 @@ func NewGasStation(config *config.GasStationConfig, carConfigs []*config.CarConf
 		return nil, err
 	}
 
-	metrics := metrics.NewMetrics(prometheus.DefaultRegisterer, config.MetricsEnabled)
+	metrics := metrics.NewMetrics(config.PrometheusRegisterer, config.PrometheusRegisterer != nil)
 
 	txSender, err := txsender.NewTxSender(ethClient.Client, config.GasStationPk, metrics)
 	if err != nil {
