@@ -30,6 +30,8 @@ type GasStation struct {
 
 	metrics *metrics.Metrics
 	logger  log.Logger
+
+	shutdown chan struct{}
 }
 
 func NewGasStation(config *config.GasStationConfig, carConfigs []*config.CarConfig) (*GasStation, error) {
@@ -69,12 +71,26 @@ func NewGasStation(config *config.GasStationConfig, carConfigs []*config.CarConf
 		metrics:         metrics,
 		logger:          logger,
 		chainId:         chainId,
+		shutdown:        make(chan struct{}),
 	}, nil
 }
 
 func (s *GasStation) Start() {
 	s.logger.Info("starting gas station", "filler", s.txSender.Address())
-	go s.refill()
+
+	for {
+		s.refill()
+
+		select {
+		case <-s.shutdown:
+			return
+		case <-time.After(s.recheckInterval):
+		}
+	}
+}
+
+func (s *GasStation) Stop() {
+	close(s.shutdown)
 }
 
 func (s *GasStation) refill() {
