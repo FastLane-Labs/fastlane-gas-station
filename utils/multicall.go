@@ -41,6 +41,7 @@ func Multicall(
 	callDataBatchGeneratorFunc func(index int) ([]multicall.Multicall3Call, error),
 	returnDataBatchHandlerFunc func(index int, returnDataAtIndex [][]byte) error,
 	indices []int,
+	logger log.Logger,
 ) error {
 
 	startTime := time.Now()
@@ -54,13 +55,13 @@ func Multicall(
 			defer wg.Done()
 			batch, err := callDataBatchGeneratorFunc(index)
 			if err != nil {
-				log.Error("failed to generate call data batch", "index", index, "err", err)
+				logger.Error("failed to generate call data batch", "index", index, "err", err)
 				return
 			}
 
 			mu.Lock()
 			if _, ok := batchAtIndex[index]; ok {
-				log.Error("duplicate indices received in multicall")
+				logger.Error("duplicate indices received in multicall")
 				mu.Unlock()
 				return
 			}
@@ -121,7 +122,7 @@ func Multicall(
 			defer func() {
 				<-sem
 				completed++
-				log.Debug("multicall progress",
+				logger.Debug("multicall progress",
 					"done", fmt.Sprintf("%f%%", float64(completed*100)/float64(len(calldataChunks))),
 					"doneChunks", completed,
 					"totalChunks", len(calldataChunks),
@@ -132,7 +133,7 @@ func Multicall(
 			returnDataBatch, err := multicall_inner(client, calldataChunk)
 			if err != nil {
 				returnDataChunks[chunkIdx] = nil
-				log.Error("failed to multicall", "err", err)
+				logger.Error("failed to multicall", "err", err)
 				return
 			}
 
@@ -153,13 +154,13 @@ func Multicall(
 			defer wg.Done()
 			loc := indexReturnDataLocation[index]
 			if err := returnDataBatchHandlerFunc(index, returnDataChunks[loc.chunkIndex][loc.fromIndexInChunk:loc.toIndexInChunk]); err != nil {
-				log.Error("failed to handle return data", "err", err)
+				logger.Error("failed to handle return data", "err", err)
 			}
 		}(idx)
 	}
 	wg.Wait()
 
-	log.Debug("multicall done",
+	logger.Debug("multicall done",
 		"numChunks", len(calldataChunks),
 		"numBatchesPerChunk", numBatchesPerMulticall,
 		"took", time.Since(startTime),

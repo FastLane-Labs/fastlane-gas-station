@@ -8,11 +8,11 @@ import (
 	"time"
 
 	"github.com/FastLane-Labs/blockchain-rpc-go/eth"
-	"github.com/FastLane-Labs/fastlane-gas-station/log"
 	"github.com/FastLane-Labs/fastlane-gas-station/metrics"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
+	"github.com/ethereum/go-ethereum/log"
 )
 
 const (
@@ -52,9 +52,10 @@ type TxSender struct {
 	state *state
 
 	metrics *metrics.Metrics
+	logger  log.Logger
 }
 
-func NewTxSender(client eth.IEthClient, pk *ecdsa.PrivateKey, metrics *metrics.Metrics) (*TxSender, error) {
+func NewTxSender(client eth.IEthClient, pk *ecdsa.PrivateKey, metrics *metrics.Metrics, logger log.Logger) (*TxSender, error) {
 	chainId, err := client.ChainID(context.Background())
 	if err != nil {
 		return nil, err
@@ -76,6 +77,7 @@ func NewTxSender(client eth.IEthClient, pk *ecdsa.PrivateKey, metrics *metrics.M
 			numRequests:    0,
 		},
 		metrics: metrics,
+		logger:  logger,
 	}
 
 	s.start()
@@ -115,7 +117,7 @@ func (s *TxSender) start() {
 
 						receipt, err := s.client.TransactionReceipt(context.Background(), broadcastTx.hash)
 						if err != nil {
-							log.Info("gas station - tx not landed... will retry",
+							s.logger.Info("tx not landed... will retry",
 								"hash", broadcastTx.hash,
 							)
 							if s.metrics.Enabled {
@@ -124,7 +126,7 @@ func (s *TxSender) start() {
 
 							suggestedGasPrice, err := s.client.SuggestGasPrice(context.Background())
 							if err != nil {
-								log.Error("gas station - retry tx suggest gas price failed",
+								s.logger.Error("retry tx suggest gas price failed",
 									"hash", broadcastTx.hash,
 									"error", err,
 								)
@@ -151,7 +153,7 @@ func (s *TxSender) start() {
 
 							signedTx, err := types.SignTx(tx, types.NewEIP155Signer(s.chainId), s.pk)
 							if err != nil {
-								log.Error("gas station - retry tx sign failed",
+								s.logger.Error("retry tx sign failed",
 									"hash", broadcastTx.hash,
 									"error", err,
 								)
@@ -159,7 +161,7 @@ func (s *TxSender) start() {
 							}
 
 							if err := s.client.SendTransaction(context.Background(), signedTx); err != nil {
-								log.Error("gas station - retry tx send failed",
+								s.logger.Error("retry tx send failed",
 									"hash", broadcastTx.hash,
 									"error", err,
 								)
@@ -185,7 +187,7 @@ func (s *TxSender) start() {
 								s.metrics.RefillTxRetries.WithLabelValues(s.chainId.String()).Inc()
 							}
 						} else if receipt.Status == types.ReceiptStatusFailed {
-							log.Error("gas station - tx reverted",
+							s.logger.Error("tx reverted",
 								"hash", broadcastTx.hash,
 								"to", broadcastTx.request.to,
 								"value", broadcastTx.request.value,
