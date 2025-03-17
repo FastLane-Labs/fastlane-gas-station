@@ -7,12 +7,12 @@ import (
 	"sync"
 	"time"
 
+	"github.com/FastLane-Labs/blockchain-rpc-go/eth"
 	"github.com/FastLane-Labs/fastlane-gas-station/log"
 	"github.com/FastLane-Labs/fastlane-gas-station/metrics"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
-	"github.com/ethereum/go-ethereum/ethclient"
 )
 
 const (
@@ -44,7 +44,7 @@ type broadcastedTx struct {
 }
 
 type TxSender struct {
-	client *ethclient.Client
+	client eth.IEthClient
 	pk     *ecdsa.PrivateKey
 
 	chainId *big.Int
@@ -54,7 +54,7 @@ type TxSender struct {
 	metrics *metrics.Metrics
 }
 
-func NewTxSender(client *ethclient.Client, pk *ecdsa.PrivateKey, metrics *metrics.Metrics) (*TxSender, error) {
+func NewTxSender(client eth.IEthClient, pk *ecdsa.PrivateKey, metrics *metrics.Metrics) (*TxSender, error) {
 	chainId, err := client.ChainID(context.Background())
 	if err != nil {
 		return nil, err

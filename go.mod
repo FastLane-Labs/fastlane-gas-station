@@ -5,6 +5,7 @@ go 1.23.0
 toolchain go1.23.7
 
 require (
+	github.com/FastLane-Labs/blockchain-rpc-go v0.0.0-20250113074257-15a9dd51b250
 	github.com/ethereum/go-ethereum v1.15.5
 	github.com/prometheus/client_golang v1.21.1
 )

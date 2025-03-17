@@ -7,19 +7,21 @@ import (
 	"sync"
 	"time"
 
+	"github.com/FastLane-Labs/blockchain-rpc-go/eth"
+	"github.com/FastLane-Labs/blockchain-rpc-go/rpc"
 	"github.com/FastLane-Labs/fastlane-gas-station/config"
 	"github.com/FastLane-Labs/fastlane-gas-station/contract/multicall"
-	"github.com/FastLane-Labs/fastlane-gas-station/events"
 	"github.com/FastLane-Labs/fastlane-gas-station/log"
 	"github.com/FastLane-Labs/fastlane-gas-station/metrics"
 	"github.com/FastLane-Labs/fastlane-gas-station/txsender"
 	"github.com/FastLane-Labs/fastlane-gas-station/utils"
 	"github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/ethclient"
+	gethEthClient "github.com/ethereum/go-ethereum/ethclient"
+	gethRpc "github.com/ethereum/go-ethereum/rpc"
 )
 
 type GasStation struct {
-	ethClient       *events.EthClientConnection
+	ethClient       eth.IEthClient
 	carConfigs      []*config.CarConfig
 	recheckInterval time.Duration
 	txSender        *txsender.TxSender
@@ -32,19 +34,29 @@ type GasStation struct {
 func NewGasStation(config *config.GasStationConfig, carConfigs []*config.CarConfig) (*GasStation, error) {
 	log.InitLogger("debug")
 
-	ethClient, err := events.NewEthClientConnection(config.EthRpcUrl)
-	if err != nil {
-		return nil, err
+	var ethClient eth.IEthClient
+
+	switch v := config.RpcClient.(type) {
+	case *eth.EthClient:
+		ethClient = v
+	case *rpc.RpcClient:
+		ethClient = eth.NewClient(v)
+	case *gethRpc.Client:
+		ethClient = eth.NewClient(v)
+	case *gethEthClient.Client:
+		ethClient = eth.NewClient(v.Client())
+	default:
+		return nil, fmt.Errorf("unsupported rpc client type: %T", v)
 	}
 
-	chainId, err := ethClient.Client.ChainID(context.Background())
+	chainId, err := ethClient.ChainID(context.Background())
 	if err != nil {
 		return nil, err
 	}
 
 	metrics := metrics.NewMetrics(config.PrometheusRegisterer, config.PrometheusRegisterer != nil)
 
-	txSender, err := txsender.NewTxSender(ethClient.Client, config.GasStationPk, metrics)
+	txSender, err := txsender.NewTxSender(ethClient, config.GasStationPk, metrics)
 	if err != nil {
 		return nil, err
 	}
@@ -61,16 +73,11 @@ func NewGasStation(config *config.GasStationConfig, carConfigs []*config.CarConf
 
 func (s *GasStation) Start() {
 	log.Info("Starting gas station", "filler", s.txSender.Address())
-	s.ethClient.Start()
-
-	go func() {
-		time.Sleep(s.recheckInterval)
-		s.refill()
-	}()
+	go s.refill()
 }
 
 func (s *GasStation) refill() {
-	balances, err := s.batchGetBalances(s.ethClient.Client, s.carConfigs)
+	balances, err := s.batchGetBalances(s.ethClient, s.carConfigs)
 	if err != nil {
 		log.Error("Failed to get balances", "error", err)
 		return
@@ -106,7 +113,7 @@ func (s *GasStation) refill() {
 
 	log.Debug("gas station: accounts to refill", "num", len(accountsToRefill))
 
-	stationBalance, err := s.ethClient.Client.BalanceAt(context.Background(), s.txSender.Address(), nil)
+	stationBalance, err := s.ethClient.BalanceAt(context.Background(), s.txSender.Address(), nil)
 	if err != nil {
 		log.Error("Failed to get station balance", "error", err)
 		return
@@ -127,7 +134,7 @@ func (s *GasStation) refill() {
 	}
 }
 
-func (s *GasStation) batchGetBalances(client *ethclient.Client, carConfigs []*config.CarConfig) (map[common.Address]*big.Int, error) {
+func (s *GasStation) batchGetBalances(client eth.IEthClient, carConfigs []*config.CarConfig) (map[common.Address]*big.Int, error) {
 	balances := make(map[common.Address]*big.Int)
 	mu := sync.Mutex{}
 

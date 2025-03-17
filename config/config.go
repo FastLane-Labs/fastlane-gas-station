@@ -10,7 +10,7 @@ import (
 )
 
 type GasStationConfig struct {
-	EthRpcUrl            string
+	RpcClient            any
 	GasStationPk         *ecdsa.PrivateKey
 	RecheckInterval      time.Duration
 	PrometheusRegisterer prometheus.Registerer

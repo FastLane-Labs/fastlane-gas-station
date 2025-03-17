@@ -6,10 +6,10 @@ import (
 	"sync"
 	"time"
 
+	"github.com/FastLane-Labs/blockchain-rpc-go/eth"
 	"github.com/FastLane-Labs/fastlane-gas-station/contract/multicall"
 	"github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/ethclient"
 	"github.com/ethereum/go-ethereum/log"
 )
 
@@ -35,7 +35,7 @@ var (
 // Returns:
 //   - error: if any error occurs during the multicall
 func Multicall(
-	client *ethclient.Client,
+	client eth.IEthClient,
 	maxConcurrentRpcCalls int,
 	numBatchesPerMulticall int,
 	callDataBatchGeneratorFunc func(index int) ([]multicall.Multicall3Call, error),
@@ -168,7 +168,7 @@ func Multicall(
 	return nil
 }
 
-func multicall_inner(client *ethclient.Client, multicallData []multicall.Multicall3Call) ([][]byte, error) {
+func multicall_inner(client eth.IEthClient, multicallData []multicall.Multicall3Call) ([][]byte, error) {
 	multicallAbi, err := multicall.MulticallMetaData.GetAbi()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get multicall abi: %v", err)
