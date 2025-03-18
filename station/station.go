@@ -170,16 +170,11 @@ func (s *GasStation) runTask(chainId string, car *Car) {
 
 		refillAmount := new(big.Int).Sub(car.WheelsBalanceTarget, balance)
 		if refillAmount.Cmp(availableFunds) > 0 {
-			refillAmount = availableFunds
+			refillAmount.Set(availableFunds)
 		}
 
 		accountsToRefill[account] = refillAmount
 		availableFunds.Sub(availableFunds, refillAmount)
-	}
-
-	if len(accountsToRefill) == 0 {
-		// No accounts to refill
-		return
 	}
 
 	for addr, amount := range accountsToRefill {
