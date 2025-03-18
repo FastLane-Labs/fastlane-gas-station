@@ -1,50 +1,56 @@
 package station
 
 import (
-	"context"
 	"fmt"
 	"math/big"
+	"strconv"
 	"sync"
 	"time"
 
 	"github.com/FastLane-Labs/blockchain-rpc-go/eth"
-	"github.com/FastLane-Labs/blockchain-rpc-go/rpc"
 	"github.com/FastLane-Labs/fastlane-gas-station/contract/multicall"
 	"github.com/ethereum/go-ethereum/common"
-	gethEthClient "github.com/ethereum/go-ethereum/ethclient"
 	"github.com/ethereum/go-ethereum/log"
-	gethRpc "github.com/ethereum/go-ethereum/rpc"
 	"github.com/prometheus/client_golang/prometheus"
 )
 
+const (
+	tagCar                = "car"
+	tagStation            = "station"
+	getEthBalanceFunction = "getEthBalance"
+)
+
+var (
+	multicallAddr   = common.HexToAddress("0xcA11bde05977b3631167028862bE2a173976CA11")
+	multicallAbi, _ = multicall.MulticallMetaData.GetAbi()
+)
+
 type Transactor interface {
+	ChainId() *big.Int
 	From() common.Address
 	GetBalance() *big.Int
+	EthClient() eth.IEthClient
+	TransferEthCost() (*big.Int, error)
 
-	// Importing package must handle whole transaction flow, including gas estimation, replacement, etc.
+	// Importing package must handle whole transaction flow, including gas estimation, tx replacement, etc.
 	Transfer(value *big.Int, to common.Address)
 }
 
-type GasStationConfig struct {
-	RpcClient            any
-	Transactor           Transactor
-	RecheckInterval      time.Duration
-	PrometheusRegisterer prometheus.Registerer
-}
+type Car struct {
+	Transactor                         Transactor
+	TransactorBalanceThreshold         *big.Int       // Balance exceeding this threshold will transfered out to TransactorExcessBalanceBeneficiary
+	TransactorBalanceTarget            *big.Int       // Transfers down to this target
+	TransactorExcessBalanceBeneficiary common.Address // Address to send excess balance to
 
-type CarConfig struct {
-	Addr            common.Address
-	IdealBalance    *big.Int
-	ToleranceInBips int64
+	Wheels                 []common.Address
+	WheelsBalanceThreshold *big.Int // Refills are triggered when balance is below this threshold
+	WheelsBalanceTarget    *big.Int // Refills up to this target
+
+	TaskInterval time.Duration
 }
 
 type GasStation struct {
-	ethClient       eth.IEthClient
-	transactor      Transactor
-	recheckInterval time.Duration
-	carConfigs      []*CarConfig
-
-	chainId *big.Int
+	cars map[uint64]*Car
 
 	metrics *Metrics
 	logger  log.Logger
@@ -52,127 +58,155 @@ type GasStation struct {
 	shutdown chan struct{}
 }
 
-func NewGasStation(config *GasStationConfig, carConfigs []*CarConfig) (*GasStation, error) {
-	logger := log.Root().New("service", "gas-station")
+func NewGasStation(cars []*Car, prometheusRegisterer prometheus.Registerer) (*GasStation, error) {
+	var (
+		chainIds = make(map[uint64]struct{})
+		_cars    = make(map[uint64]*Car)
+	)
 
-	var ethClient eth.IEthClient
-	switch v := config.RpcClient.(type) {
-	case *eth.EthClient:
-		ethClient = v
-	case *rpc.RpcClient:
-		ethClient = eth.NewClient(v)
-	case *gethRpc.Client:
-		ethClient = eth.NewClient(v)
-	case *gethEthClient.Client:
-		ethClient = eth.NewClient(v.Client())
-	default:
-		return nil, fmt.Errorf("unsupported rpc client type: %T", v)
-	}
+	for _, car := range cars {
+		chainId := car.Transactor.ChainId().Uint64()
 
-	chainId, err := ethClient.ChainID(context.Background())
-	if err != nil {
-		return nil, err
+		if _, ok := chainIds[chainId]; ok {
+			return nil, fmt.Errorf("duplicate chainId: %d", chainId)
+		}
+
+		chainIds[chainId] = struct{}{}
+		_cars[chainId] = car
 	}
 
 	return &GasStation{
-		ethClient:       ethClient,
-		transactor:      config.Transactor,
-		carConfigs:      carConfigs,
-		recheckInterval: config.RecheckInterval,
-		metrics:         NewMetrics(config.PrometheusRegisterer, config.PrometheusRegisterer != nil),
-		logger:          logger,
-		chainId:         chainId,
-		shutdown:        make(chan struct{}),
+		cars:     _cars,
+		metrics:  NewMetrics(prometheusRegisterer, prometheusRegisterer != nil),
+		logger:   log.Root().New("service", "gas-station"),
+		shutdown: make(chan struct{}),
 	}, nil
 }
 
 func (s *GasStation) Start() {
-	s.logger.Info("starting gas station", "filler", s.transactor.From())
+	for chainId, car := range s.cars {
+		go s.start(chainId, car)
+	}
+}
+
+func (s *GasStation) start(chainId uint64, car *Car) {
+	s.logger.Info("starting gas station", "chainId", chainId)
+
+	_chainId := strconv.FormatUint(chainId, 10)
 
 	for {
-		s.refill()
+		s.runTask(_chainId, car)
 
 		select {
 		case <-s.shutdown:
 			return
-		case <-time.After(s.recheckInterval):
+		case <-time.After(car.TaskInterval):
 		}
 	}
 }
 
 func (s *GasStation) Stop() {
+	s.logger.Info("stopping gas station")
 	close(s.shutdown)
 }
 
-func (s *GasStation) refill() {
-	balances, err := s.batchGetBalances(s.ethClient, s.carConfigs)
+func (s *GasStation) runTask(chainId string, car *Car) {
+	// 1. Transfer excess balance if any
+	transactorBalance := car.Transactor.GetBalance()
+
+	if s.metrics.Enabled {
+		f, _ := transactorBalance.Float64()
+		s.metrics.Balance.WithLabelValues(chainId, car.Transactor.From().Hex(), tagStation).Set(f)
+	}
+
+	if transactorBalance.Cmp(car.TransactorBalanceThreshold) > 0 {
+		excessBalance := new(big.Int).Sub(transactorBalance, car.TransactorBalanceTarget)
+		car.Transactor.Transfer(excessBalance, car.TransactorExcessBalanceBeneficiary)
+	}
+
+	// 2. Refill wheels
+	wheelsBalances, err := s.batchGetBalances(car.Transactor.EthClient(), car.Wheels)
 	if err != nil {
 		s.logger.Error("failed to get balances", "error", err)
 		return
 	}
 
-	s.logger.Debug("balances fetched", "num", len(balances))
-
-	accountsToRefill := make(map[common.Address]*big.Int)
-	totalRefillAmount := big.NewInt(0)
-
-	for _, carConfig := range s.carConfigs {
-		if bal, ok := balances[carConfig.Addr]; ok {
-			balanceTolerance := new(big.Int).Mul(carConfig.IdealBalance, big.NewInt(carConfig.ToleranceInBips))
-			balanceTolerance.Div(balanceTolerance, big.NewInt(10000))
-
-			minBalance := new(big.Int).Sub(carConfig.IdealBalance, balanceTolerance)
-			if bal.Cmp(minBalance) < 0 {
-				shortfall := new(big.Int).Sub(minBalance, bal)
-				accountsToRefill[carConfig.Addr] = shortfall
-				totalRefillAmount.Add(totalRefillAmount, shortfall)
-			}
+	if s.metrics.Enabled {
+		for account, balance := range wheelsBalances {
+			f, _ := balance.Float64()
+			s.metrics.Balance.WithLabelValues(chainId, account.Hex(), tagCar).Set(f)
 		}
 	}
 
-	if s.metrics.Enabled {
-		s.metrics.LowBalanceAccounts.WithLabelValues(s.chainId.String()).Set(float64(len(accountsToRefill)))
-	}
-
-	if len(accountsToRefill) == 0 {
-		s.logger.Debug("no accounts to refill")
+	transferEthCost, err := car.Transactor.TransferEthCost()
+	if err != nil {
+		s.logger.Error("failed to get transfer eth cost", "error", err)
 		return
 	}
 
-	s.logger.Debug("accounts to refill", "num", len(accountsToRefill))
+	var (
+		availableFunds   = car.Transactor.GetBalance()
+		accountsToRefill = make(map[common.Address]*big.Int)
+	)
 
-	stationBalance := s.transactor.GetBalance()
+	for _, account := range car.Wheels {
+		balance, ok := wheelsBalances[account]
+		if !ok {
+			s.logger.Error("balance not found", "account", account)
+			continue
+		}
 
-	if totalRefillAmount.Cmp(stationBalance) > 0 {
-		s.logger.Error("not enough balance", "balance", stationBalance, "required", totalRefillAmount)
+		if balance.Cmp(car.WheelsBalanceThreshold) >= 0 {
+			// Car does not need refill
+			continue
+		}
+
+		availableFunds.Sub(availableFunds, transferEthCost)
+
+		if availableFunds.Cmp(common.Big0) <= 0 {
+			// No more funds available
+			break
+		}
+
+		refillAmount := new(big.Int).Sub(car.WheelsBalanceTarget, balance)
+		if refillAmount.Cmp(availableFunds) > 0 {
+			refillAmount = availableFunds
+		}
+
+		accountsToRefill[account] = refillAmount
+		availableFunds.Sub(availableFunds, refillAmount)
+	}
+
+	if len(accountsToRefill) == 0 {
+		// No accounts to refill
 		return
 	}
 
 	for addr, amount := range accountsToRefill {
-		s.transactor.Transfer(amount, addr)
+		car.Transactor.Transfer(amount, addr)
+		if s.metrics.Enabled {
+			s.metrics.RefillTxSent.WithLabelValues(chainId).Inc()
+		}
 	}
 }
 
-func (s *GasStation) batchGetBalances(client eth.IEthClient, carConfigs []*CarConfig) (map[common.Address]*big.Int, error) {
-	balances := make(map[common.Address]*big.Int)
-	mu := sync.Mutex{}
+func (s *GasStation) batchGetBalances(client eth.IEthClient, accounts []common.Address) (map[common.Address]*big.Int, error) {
+	var (
+		balances = make(map[common.Address]*big.Int)
+		indices  = make([]int, len(accounts))
+		mu       sync.Mutex
+	)
 
-	multicallAddr := common.HexToAddress("0xcA11bde05977b3631167028862bE2a173976CA11")
-	abi, err := multicall.MulticallMetaData.GetAbi()
-	if err != nil {
-		return nil, fmt.Errorf("error getting abi: %w", err)
-	}
-
-	indices := make([]int, len(carConfigs))
-	for i := range carConfigs {
+	for i := range accounts {
 		indices[i] = i
 	}
 
 	calldataBatchGenerator := func(idx int) ([]multicall.Multicall3Call, error) {
-		calldata, err := abi.Pack("getEthBalance", carConfigs[idx].Addr)
+		calldata, err := multicallAbi.Pack(getEthBalanceFunction, accounts[idx])
 		if err != nil {
 			return nil, fmt.Errorf("error packing calldata: %w", err)
 		}
+
 		return []multicall.Multicall3Call{
 			{
 				Target:   multicallAddr,
@@ -185,27 +219,22 @@ func (s *GasStation) batchGetBalances(client eth.IEthClient, carConfigs []*CarCo
 		if len(returnDatas) != 1 {
 			return fmt.Errorf("expected 1 return data, got %d", len(returnDatas))
 		}
-		balance, err := abi.Unpack("getEthBalance", returnDatas[0])
+
+		balance, err := multicallAbi.Unpack(getEthBalanceFunction, returnDatas[0])
 		if err != nil {
 			return fmt.Errorf("error unpacking return data: %w", err)
 		}
+
 		mu.Lock()
-		balances[carConfigs[idx].Addr] = balance[0].(*big.Int)
+		balances[accounts[idx]] = balance[0].(*big.Int)
 		mu.Unlock()
+
 		return nil
 	}
 
-	err = Multicall(client,
-		1,
-		1000,
-		calldataBatchGenerator,
-		returnDataBatchHandler,
-		indices,
-		s.logger,
-	)
-
-	if err != nil {
+	if err := Multicall(client, calldataBatchGenerator, returnDataBatchHandler, indices, s.logger); err != nil {
 		return nil, fmt.Errorf("error multicalling: %w", err)
 	}
+
 	return balances, nil
 }

@@ -9,43 +9,22 @@ import (
 	"github.com/FastLane-Labs/blockchain-rpc-go/eth"
 	"github.com/FastLane-Labs/fastlane-gas-station/contract/multicall"
 	"github.com/ethereum/go-ethereum"
-	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/log"
 )
 
-var (
-	multicallAddress = common.HexToAddress("0xcA11bde05977b3631167028862bE2a173976CA11") // mutlticall3 common for all chains
+const (
+	aggregateFunction = "aggregate"
+	callPerBatch      = 500
+	networkTimeout    = 3 * time.Second
 )
 
-// Multicall makes multiple batched RPC calls to an *ethclient.Client
-// based on generating []multicall.Multicall3Call from indices and handling [][]byte return data.
-// Example use case: `pools.fillUniswapV2StaticData`.
-// WARNING: Parallel execution of `returnDataBatchHandlerFunc` and `callDataBatchGeneratorFunc` is used,
-// so take care of any contention in these functions.
-//
-// Arguments:
-//   - client: *ethclient.Client
-//   - maxConcurrentRpcCalls: number of concurrent goroutines to use while making multicalls (mainly to manage rate limits enforced by the RPC provider)
-//   - numBatchesPerMulticall: number of batches to club together in a single multicall
-//     (there's a limit on the multicall calldata size, so use a smaller `numBatchesPerMulticall` if batch size is bigger)
-//   - callDataBatchGeneratorFunc: function that takes an index and returns []multicall.Multicall3Call
-//   - returnDataBatchHandlerFunc: function that takes an index and [][]byte return data
-//   - indices: indices for which to call `callDataBatchGeneratorFunc` and then `returnDataBatchHandlerFunc`
-//
-// Returns:
-//   - error: if any error occurs during the multicall
 func Multicall(
 	client eth.IEthClient,
-	maxConcurrentRpcCalls int,
-	numBatchesPerMulticall int,
 	callDataBatchGeneratorFunc func(index int) ([]multicall.Multicall3Call, error),
 	returnDataBatchHandlerFunc func(index int, returnDataAtIndex [][]byte) error,
 	indices []int,
 	logger log.Logger,
 ) error {
-
-	startTime := time.Now()
-
 	batchAtIndex := make(map[int][]multicall.Multicall3Call)
 	wg := sync.WaitGroup{}
 	mu := sync.Mutex{}
@@ -84,7 +63,7 @@ func Multicall(
 		if from == len(indices) {
 			break
 		}
-		to := from + numBatchesPerMulticall
+		to := from + callPerBatch
 		if to > len(indices) {
 			to = len(indices)
 		}
@@ -113,22 +92,14 @@ func Multicall(
 
 	returnDataChunks := make([][][]byte, len(calldataChunks))
 
-	sem := make(chan struct{}, maxConcurrentRpcCalls)
 	completed := 0
 	for j, ch := range calldataChunks {
 		wg.Add(1)
 		go func(chunkIdx int, calldataChunk []multicall.Multicall3Call) {
 			defer wg.Done()
 			defer func() {
-				<-sem
 				completed++
-				logger.Debug("multicall progress",
-					"done", fmt.Sprintf("%f%%", float64(completed*100)/float64(len(calldataChunks))),
-					"doneChunks", completed,
-					"totalChunks", len(calldataChunks),
-				)
 			}()
-			sem <- struct{}{}
 
 			returnDataBatch, err := multicall_inner(client, calldataChunk)
 			if err != nil {
@@ -160,37 +131,29 @@ func Multicall(
 	}
 	wg.Wait()
 
-	logger.Debug("multicall done",
-		"numChunks", len(calldataChunks),
-		"numBatchesPerChunk", numBatchesPerMulticall,
-		"took", time.Since(startTime),
-	)
-
 	return nil
 }
 
 func multicall_inner(client eth.IEthClient, multicallData []multicall.Multicall3Call) ([][]byte, error) {
-	multicallAbi, err := multicall.MulticallMetaData.GetAbi()
-	if err != nil {
-		return nil, fmt.Errorf("failed to get multicall abi: %v", err)
-	}
-
-	ethCalldata, err := multicallAbi.Pack("aggregate", multicallData)
+	ethCalldata, err := multicallAbi.Pack(aggregateFunction, multicallData)
 	if err != nil {
 		return nil, fmt.Errorf("failed to pack multicall data: %v", err)
 	}
 
 	ethMsg := ethereum.CallMsg{
-		To:   &multicallAddress,
+		To:   &multicallAddr,
 		Data: ethCalldata,
 	}
 
-	resp, err := client.CallContract(context.Background(), ethMsg, nil)
+	ctx, cancel := context.WithTimeout(context.Background(), networkTimeout)
+	defer cancel()
+
+	resp, err := client.CallContract(ctx, ethMsg, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to call multicall contract: %v", err)
 	}
 
-	res, err := multicallAbi.Unpack("aggregate", resp)
+	res, err := multicallAbi.Unpack(aggregateFunction, resp)
 	if err != nil {
 		return nil, fmt.Errorf("failed to unpack multicall response: %v", err)
 	}
