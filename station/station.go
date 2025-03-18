@@ -27,7 +27,7 @@ var (
 
 type Transactor interface {
 	ChainId() *big.Int
-	From() common.Address
+	Address() common.Address
 	GetBalance() *big.Int
 	EthClient() eth.IEthClient
 	TransferEthCost() (*big.Int, error)
@@ -116,7 +116,7 @@ func (s *GasStation) runTask(chainId string, car *Car) {
 
 	if s.metrics.Enabled {
 		f, _ := transactorBalance.Float64()
-		s.metrics.Balance.WithLabelValues(chainId, car.Transactor.From().Hex(), tagStation).Set(f)
+		s.metrics.Balance.WithLabelValues(chainId, car.Transactor.Address().Hex(), tagStation).Set(f)
 	}
 
 	if transactorBalance.Cmp(car.TransactorBalanceThreshold) > 0 {
