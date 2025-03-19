@@ -1,6 +1,7 @@
 package station
 
 import (
+	"context"
 	"fmt"
 	"math/big"
 	"strconv"
@@ -72,6 +73,19 @@ func NewGasStation(cars []*Car, prometheusRegisterer prometheus.Registerer) (*Ga
 		}
 
 		chainIds[chainId] = struct{}{}
+
+		ctx, cancel := context.WithTimeout(context.Background(), networkTimeout)
+		bytecode, err := car.Transactor.EthClient().CodeAt(ctx, multicallAddr, nil)
+		cancel()
+
+		if err != nil {
+			return nil, err
+		}
+
+		if len(bytecode) == 0 {
+			return nil, fmt.Errorf("multicall contract not deployed: %s on chain ID %d", multicallAddr.Hex(), chainId)
+		}
+
 		_cars[chainId] = car
 	}
 
