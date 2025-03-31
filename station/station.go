@@ -139,9 +139,9 @@ func (s *GasStation) runTask(chainId string, car *Car) {
 	}
 
 	// 2. Refill wheels
-	wheelsBalances, err := s.batchGetBalances(car.Transactor.EthClient(), car.Wheels)
+	wheelsBalances, err := s.batchGetBalances(car.Transactor.EthClient(), chainId, car.Wheels)
 	if err != nil {
-		s.logger.Error("failed to get balances", "error", err)
+		s.logger.Error("failed to get balances", "chainId", chainId, "error", err)
 		return
 	}
 
@@ -154,7 +154,7 @@ func (s *GasStation) runTask(chainId string, car *Car) {
 
 	transferEthCost, err := car.Transactor.TransferEthCost()
 	if err != nil {
-		s.logger.Error("failed to get transfer eth cost", "error", err)
+		s.logger.Error("failed to get transfer eth cost", "chainId", chainId, "error", err)
 		return
 	}
 
@@ -166,7 +166,7 @@ func (s *GasStation) runTask(chainId string, car *Car) {
 	for _, account := range car.Wheels {
 		balance, ok := wheelsBalances[account]
 		if !ok {
-			s.logger.Error("balance not found", "account", account)
+			s.logger.Error("balance not found", "chainId", chainId, "account", account)
 			continue
 		}
 
@@ -199,7 +199,7 @@ func (s *GasStation) runTask(chainId string, car *Car) {
 	}
 }
 
-func (s *GasStation) batchGetBalances(client eth.IEthClient, accounts []common.Address) (map[common.Address]*big.Int, error) {
+func (s *GasStation) batchGetBalances(client eth.IEthClient, chainId string, accounts []common.Address) (map[common.Address]*big.Int, error) {
 	var (
 		balances = make(map[common.Address]*big.Int)
 		indices  = make([]int, len(accounts))
@@ -241,7 +241,7 @@ func (s *GasStation) batchGetBalances(client eth.IEthClient, accounts []common.A
 		return nil
 	}
 
-	if err := Multicall(client, calldataBatchGenerator, returnDataBatchHandler, indices, s.logger); err != nil {
+	if err := Multicall(client, chainId, calldataBatchGenerator, returnDataBatchHandler, indices, s.logger); err != nil {
 		return nil, fmt.Errorf("error multicalling: %w", err)
 	}
 

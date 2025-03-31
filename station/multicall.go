@@ -20,6 +20,7 @@ const (
 
 func Multicall(
 	client eth.IEthClient,
+	chainId string,
 	callDataBatchGeneratorFunc func(index int) ([]multicall.Multicall3Call, error),
 	returnDataBatchHandlerFunc func(index int, returnDataAtIndex [][]byte) error,
 	indices []int,
@@ -34,13 +35,13 @@ func Multicall(
 			defer wg.Done()
 			batch, err := callDataBatchGeneratorFunc(index)
 			if err != nil {
-				logger.Error("failed to generate call data batch", "index", index, "err", err)
+				logger.Error("failed to generate call data batch", "chainId", chainId, "index", index, "err", err)
 				return
 			}
 
 			mu.Lock()
 			if _, ok := batchAtIndex[index]; ok {
-				logger.Error("duplicate indices received in multicall")
+				logger.Error("duplicate indices received in multicall", "chainId", chainId, "index", index)
 				mu.Unlock()
 				return
 			}
@@ -104,7 +105,7 @@ func Multicall(
 			returnDataBatch, err := multicall_inner(client, calldataChunk)
 			if err != nil {
 				returnDataChunks[chunkIdx] = nil
-				logger.Error("failed to multicall", "err", err)
+				logger.Error("failed to multicall", "chainId", chainId, "err", err)
 				return
 			}
 
@@ -125,7 +126,7 @@ func Multicall(
 			defer wg.Done()
 			loc := indexReturnDataLocation[index]
 			if err := returnDataBatchHandlerFunc(index, returnDataChunks[loc.chunkIndex][loc.fromIndexInChunk:loc.toIndexInChunk]); err != nil {
-				logger.Error("failed to handle return data", "err", err)
+				logger.Error("failed to handle return data", "chainId", chainId, "err", err)
 			}
 		}(idx)
 	}
